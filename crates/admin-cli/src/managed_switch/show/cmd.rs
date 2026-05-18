@@ -359,11 +359,6 @@ fn show_managed_switch_details_view(m: ManagedSwitchOutput) -> CarbideCliResult<
     let mut lines = String::new();
 
     writeln!(&mut lines, "Name        : {}", m.name)?;
-    writeln!(
-        &mut lines,
-        "Switch ID   : {}",
-        m.switch_id.as_deref().unwrap_or(UNKNOWN)
-    )?;
     writeln!(&mut lines, "State       : {}", m.controller_state)?;
     if let Some(ref reason) = m.state_reason {
         writeln!(&mut lines, "    Reason  : {}", reason)?;
@@ -375,6 +370,7 @@ fn show_managed_switch_details_view(m: ManagedSwitchOutput) -> CarbideCliResult<
     )?;
 
     let data = vec![
+        ("  ID", m.switch_id),
         ("  Serial Number", non_empty(m.serial_number)),
         ("  Slot Number", m.slot_number.map(|n| n.to_string())),
         ("  Tray Index", m.tray_index.map(|n| n.to_string())),
