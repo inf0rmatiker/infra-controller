@@ -56,6 +56,8 @@ struct ManagedSwitchOutput {
     serial_number: String,
     bmc_mac: String,
     bmc_ip: Option<String>,
+    bmc_version: Option<String>,
+    bmc_firmware_version: Option<String>,
     nvos_mac_addresses: Vec<String>,
     controller_state: String,
     power_state: Option<String>,
@@ -125,6 +127,12 @@ fn build_managed_switch_outputs(
             serial_number: linked_switch.switch_serial_number.clone(),
             bmc_mac: linked_switch.bmc_mac_address.clone(),
             bmc_ip: linked_switch.explored_endpoint_address.clone(),
+            bmc_version: switch
+                .and_then(|s| s.bmc_info.as_ref())
+                .and_then(|b| b.version.clone()),
+            bmc_firmware_version: switch
+                .and_then(|s| s.bmc_info.as_ref())
+                .and_then(|b| b.firmware_version.clone()),
             nvos_mac_addresses: nvos_macs,
             controller_state: switch
                 .map(|s| s.controller_state.clone())
@@ -185,6 +193,11 @@ fn build_managed_switch_outputs(
                 .and_then(|b| b.mac.clone())
                 .unwrap_or_default(),
             bmc_ip: switch.bmc_info.as_ref().and_then(|b| b.ip.clone()),
+            bmc_version: switch.bmc_info.as_ref().and_then(|b| b.version.clone()),
+            bmc_firmware_version: switch
+                .bmc_info
+                .as_ref()
+                .and_then(|b| b.firmware_version.clone()),
             nvos_mac_addresses: nvos_macs,
             controller_state: switch.controller_state.clone(),
             power_state: switch.status.as_ref().and_then(|st| st.power_state.clone()),
@@ -382,6 +395,8 @@ fn show_managed_switch_details_view(m: ManagedSwitchOutput) -> CarbideCliResult<
             non_empty(m.nvos_mac_addresses.join(", ")),
         ),
         ("  BMC", Some(String::new())),
+        ("    Version", m.bmc_version),
+        ("    Firmware Version", m.bmc_firmware_version),
         ("    IP", m.bmc_ip),
         ("    MAC", non_empty(m.bmc_mac)),
     ];

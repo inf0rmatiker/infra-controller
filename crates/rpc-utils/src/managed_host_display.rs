@@ -194,6 +194,18 @@ impl From<Machine> for ManagedHostOutput {
             .map(|o| o.source)
             .collect();
 
+        // If the rack ID is empty or "Unknown", set it to "N/A"
+        let rack_id = match machine.rack_id.as_ref() {
+            Some(id) => {
+                if id.as_str().is_empty() || id.as_str() == "Unknown" {
+                    Some("N/A".to_string())
+                } else {
+                    Some(id.to_string())
+                }
+            }
+            None => Some("N/A".to_string()),
+        };
+
         ManagedHostOutput {
             hostname: primary_interface
                 .as_ref()
@@ -251,7 +263,7 @@ impl From<Machine> for ManagedHostOutput {
             instance_type_id: machine.instance_type_id.clone(),
             slot_number: machine.placement_in_rack.and_then(|p| p.slot_number),
             tray_index: machine.placement_in_rack.and_then(|p| p.tray_index),
-            rack_id: machine.rack_id.as_ref().map(|id| id.to_string()),
+            rack_id,
             health,
             health_sources,
             ..Default::default()
