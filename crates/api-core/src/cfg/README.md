@@ -641,7 +641,8 @@ events, so consumers handle them identically.
 | `kms` | `KmsConfig` | **required** | KMS backend configuration (see [KmsConfig](#kmsconfig)). |
 | `routing` | `HashMap<String, String>` | **required** | Maps path prefixes to the `kek_id` that encrypts new writes under them, longest prefix winning. A `/` catch-all entry is required. Reads never consult routing — every stored row records the KEK that wrote it. |
 | `backends` | `Vec<CredentialBackend>` | `[vault]` | The credential backend read order, highest priority first (first match wins). The local-override readers (env, file) are always tried ahead of these when enabled. |
-| `writer` | `CredentialBackend` | `vault` | Where new credential writes go. Set to `postgres` to send new writes to the journal; independent of `backends`. |
+| `writer` | `CredentialBackend` | `vault` | Default write target when `writer_routing` is unset; also used as the catch-all route when `"/"` is omitted from `writer_routing`. |
+| `writer_routing` | `Option<HashMap<String, CredentialBackend>>` | — | Per-prefix credential write routing (longest prefix wins). Example: `racks = postgres`, `/ = vault` sends rack maintenance access tokens to Postgres and all other writes to Vault. |
 | `import_from` | `Option<ImportSource>` | — | A source backend to import secrets from at startup. Unset means a fresh site with nothing to import; unsupported values fail config parsing. |
 | `import_approach` | `ImportApproach` | `missing_only` | How to treat secrets that already exist in Postgres during import. |
 

@@ -379,3 +379,32 @@ async fn re_wrap_stale_counts_each_row_once_across_routed_keks(pool: sqlx::PgPoo
     assert_eq!(again.re_wrapped, 0);
     assert_eq!(again.already_current, 2);
 }
+
+// Rack maintenance access tokens use the racks/ path prefix in the Postgres
+// secrets journal when writer_routing sends them there.
+#[crate::sqlx_test]
+async fn rack_maintenance_access_token_round_trip(pool: sqlx::PgPool) {
+    use carbide_uuid::rack::RackId;
+
+    let routing = SecretRouting::new(vec![
+        ("/".to_string(), "default-key".to_string()),
+        ("racks".to_string(), "default-key".to_string()),
+    ]);
+    let mgr = manager(
+        &pool,
+        routing,
+        kms_with_keys(&[("default-key", 42)]),
+    );
+    let rack_id = RackId::new("launchpad-r1");
+    let key = CredentialKey::RackMaintenanceAccessToken { rack_id };
+
+    mgr.set_credentials(&key, &cred("access_token", "HELLO"))
+        .await
+        .expect("set rack token");
+
+    let current = mgr.get_credentials(&key).await.expect("get");
+    assert_eq!(current, Some(cred("access_token", "HELLO")));
+
+    mgr.delete_credentials(&key).await.expect("delete");
+    assert_eq!(mgr.get_credentials(&key).await.expect("get"), None);
+}

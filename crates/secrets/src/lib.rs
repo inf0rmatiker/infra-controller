@@ -39,6 +39,7 @@ pub mod forge_vault;
 pub mod key_encryption;
 pub mod local_credentials;
 pub mod memory_credentials;
+pub mod routed_writer;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -48,6 +49,7 @@ use credentials::{
 };
 use local_credentials::{EnvCredentials, FileCredentialsWatcher};
 pub use memory_credentials::MemoryCredentialStore;
+pub use routed_writer::RoutedCredentialWriter;
 
 #[derive(Default, Debug, Clone)]
 pub struct CredentialConfig {

@@ -949,13 +949,25 @@ pub struct SecretsConfig {
     #[serde(default = "default_secret_backends")]
     pub backends: Vec<CredentialBackend>,
 
-    /// Where new credential writes go. Defaults to `vault`; set to `postgres`
-    /// to send new writes to the journal. Independent of `backends`: e.g.
-    /// `writer = "postgres"` while `postgres` is not in `backends` (reads still
-    /// served by vault) is a valid shadow-write -- it confirms writes land
-    /// before reads start trusting Postgres -- and only logs a warning.
+    /// Where new credential writes go when `[secrets.writer_routing]` is absent.
+    /// Defaults to `vault`; set to `postgres` to send all new writes to the
+    /// journal. When `writer_routing` is set, this value is still used as the
+    /// catch-all route if `"/"` is omitted from that table.
     #[serde(default)]
     pub writer: CredentialBackend,
+
+    /// Per-prefix credential write routing, longest prefix winning. When set,
+    /// writes (and deletes) for a credential path go to the named backend
+    /// instead of the single global `writer`. Reads still use `backends` order.
+    ///
+    /// Example:
+    /// ```toml
+    /// [secrets.writer_routing]
+    /// "/" = "vault"
+    /// "racks" = "postgres"
+    /// ```
+    #[serde(default)]
+    pub writer_routing: Option<std::collections::HashMap<String, CredentialBackend>>,
 
     /// A source backend to import secrets from at startup. Unset means a
     /// fresh site with nothing to import; unsupported values fail config
@@ -4794,6 +4806,42 @@ firmware_url = "https://firmware.example.com/fw-b.bin"
         // (env/file are prepended separately) writing to vault.
         assert_eq!(secrets.backends, vec![CredentialBackend::Vault]);
         assert_eq!(secrets.writer, CredentialBackend::Vault);
+        assert!(secrets.writer_routing.is_none());
+    }
+
+    #[test]
+    fn secrets_config_parses_writer_routing() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            secrets: SecretsConfig,
+        }
+
+        let toml_str = r#"
+            [secrets]
+            backends = ["postgres", "vault"]
+            writer = "vault"
+
+            [secrets.writer_routing]
+            "/" = "vault"
+            "racks" = "postgres"
+
+            [secrets.kms]
+            active = "local"
+            [secrets.kms.providers.local]
+            type = "integrated"
+            keys.default-key = { env = "K" }
+
+            [secrets.routing]
+            "/" = "default-key"
+            "racks" = "default-key"
+        "#;
+        let secrets = toml::from_str::<Wrapper>(toml_str)
+            .expect("parse writer_routing")
+            .secrets;
+        assert_eq!(secrets.writer, CredentialBackend::Vault);
+        let writer_routing = secrets.writer_routing.expect("writer_routing");
+        assert_eq!(writer_routing["/"], CredentialBackend::Vault);
+        assert_eq!(writer_routing["racks"], CredentialBackend::Postgres);
     }
 
     // Verifies that a typo'd import source fails config parsing instead of

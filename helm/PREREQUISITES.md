@@ -233,6 +233,42 @@ global:
 
 ---
 
+## 5.1 Optional: Postgres Secrets Journal (per-prefix writer routing)
+
+By default, `nico-api` writes all credentials to Vault KV. To store **rack maintenance access
+tokens** in the encrypted Postgres `secrets` table while leaving other credentials on Vault,
+enable the chart's `secrets` values and provision a KMS key:
+
+```yaml
+nico-api:
+  secrets:
+    enabled: true
+    backends: [postgres, vault]
+    writer: vault
+    writerRouting:
+      "/": vault
+      racks: postgres
+    routing:
+      "/": default-key
+      racks: default-key
+    kms:
+      active: local
+      provider:
+        type: integrated
+        keys:
+          default-key:
+            env: CARBIDE_SECRETS_KEY_DEFAULT
+    kmsKeySecret:
+      enabled: true
+      name: nico-secrets-kms-keys
+      key: default-key
+```
+
+Create the `nico-secrets-kms-keys` Secret with a base64-encoded 32-byte AES key before
+enabling. The `nico-api` migration job creates the `secrets` table automatically.
+
+---
+
 ## 6. Site Configuration
 
 `nico-api` **exits at startup** if resource pools are not defined. You must set `nico-api.siteConfig.enabled: true` and provide a `nicoApiSiteConfig` TOML value that includes at minimum the four required pool definitions.

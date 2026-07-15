@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 
 use super::PgSecretsError;
+use crate::cfg::file::CredentialBackend;
 
 /// Maps secret path prefixes to the KEK that encrypts new writes under
 /// them, longest prefix winning. Routing only decides the key for writes
@@ -142,6 +143,104 @@ impl SecretRouting {
         self.routes
             .iter()
             .map(|(prefix, kek_id)| (prefix.as_str(), kek_id.as_str()))
+    }
+}
+
+/// Maps credential path prefixes to the backend that receives writes and
+/// deletes for paths under them, longest prefix winning. When
+/// `[secrets.writer_routing]` is unset, startup uses the single global
+/// `writer` instead.
+#[derive(Clone)]
+pub struct BackendRouting {
+    routes: Vec<(String, CredentialBackend)>,
+    default_backend: CredentialBackend,
+}
+
+impl BackendRouting {
+    /// Build routing from `[secrets.writer_routing]`. Requires a `"/"`
+    /// catch-all entry unless `default_backend` is supplied as the sole
+    /// fallback via `from_config_with_default`.
+    pub fn from_config(
+        routing: &HashMap<String, CredentialBackend>,
+        default_backend: CredentialBackend,
+    ) -> Result<Self, PgSecretsError> {
+        if routing.is_empty() {
+            return Err(PgSecretsError::RoutingConfig(
+                "writer_routing is empty".to_string(),
+            ));
+        }
+
+        let mut effective = routing.clone();
+        effective.entry(CATCH_ALL.to_string()).or_insert(default_backend);
+
+        let mut seen: HashMap<String, &String> = HashMap::new();
+        for (prefix, _backend) in &effective {
+            if prefix.is_empty() {
+                return Err(PgSecretsError::RoutingConfig(
+                    "empty writer_routing prefix; use \"/\" for the catch-all".to_string(),
+                ));
+            }
+            if prefix != CATCH_ALL && prefix.starts_with('/') {
+                return Err(PgSecretsError::RoutingConfig(format!(
+                    "writer_routing prefix {prefix:?} starts with '/' but credential paths do not; \
+                     use \"/\" only for the catch-all"
+                )));
+            }
+            let normalized = normalize_prefix(prefix);
+            if let Some(other) = seen.insert(normalized, prefix) {
+                return Err(PgSecretsError::RoutingConfig(format!(
+                    "writer_routing prefixes {other:?} and {prefix:?} are the same route"
+                )));
+            }
+        }
+
+        let default_backend = *effective
+            .get(CATCH_ALL)
+            .expect("catch-all checked above");
+
+        Ok(Self::new(
+            effective
+                .into_iter()
+                .filter(|(prefix, _)| prefix.as_str() != CATCH_ALL)
+                .map(|(prefix, backend)| (prefix, backend))
+                .collect(),
+            default_backend,
+        ))
+    }
+
+    /// Build routing from pre-built entries. Unlike [`Self::from_config`]
+    /// this does not validate collisions, which lets tests construct partial
+    /// routing on purpose.
+    pub fn new(routes: Vec<(String, CredentialBackend)>, default_backend: CredentialBackend) -> Self {
+        let mut routes: Vec<(String, CredentialBackend)> = routes
+            .into_iter()
+            .map(|(prefix, backend)| (normalize_prefix(&prefix), backend))
+            .collect();
+        routes.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        Self {
+            routes,
+            default_backend,
+        }
+    }
+
+    /// Return the backend that should receive a write or delete at `path`.
+    pub fn backend_for_path(&self, path: &str) -> CredentialBackend {
+        self.routes
+            .iter()
+            .find(|(prefix, _)| path.starts_with(prefix.as_str()))
+            .map(|(_, backend)| *backend)
+            .unwrap_or(self.default_backend)
+    }
+
+    /// Iterate configured `(prefix, backend)` routes, excluding the catch-all.
+    pub fn routes(&self) -> impl Iterator<Item = (&str, CredentialBackend)> {
+        self.routes
+            .iter()
+            .map(|(prefix, backend)| (prefix.as_str(), *backend))
+    }
+
+    pub fn default_backend(&self) -> CredentialBackend {
+        self.default_backend
     }
 }
 
@@ -292,5 +391,63 @@ mod tests {
         let r = SecretRouting::from_config(&routing).expect("from_config");
         let keks: Vec<&str> = r.routes().map(|(_, kek)| kek).collect();
         assert_eq!(keks, vec!["key2", "key1"]);
+    }
+
+    // -- BackendRouting (credential writer destination) --
+
+    #[test]
+    fn backend_routing_longest_prefix_match() {
+        use crate::cfg::file::CredentialBackend;
+
+        let routing = BackendRouting::new(
+            vec![
+                ("racks".to_string(), CredentialBackend::Postgres),
+                (
+                    "machines/bmc".to_string(),
+                    CredentialBackend::Vault,
+                ),
+            ],
+            CredentialBackend::Vault,
+        );
+
+        assert_eq!(
+            routing.backend_for_path("racks/launchpad-r1/maintenance/access-token"),
+            CredentialBackend::Postgres
+        );
+        assert_eq!(
+            routing.backend_for_path("machines/bmc/site/root"),
+            CredentialBackend::Vault
+        );
+        assert_eq!(
+            routing.backend_for_path("ufm/fabric/auth"),
+            CredentialBackend::Vault
+        );
+    }
+
+    #[test]
+    fn backend_routing_from_config_inserts_default_catch_all() {
+        use crate::cfg::file::CredentialBackend;
+
+        let mut routing = HashMap::new();
+        routing.insert("racks".to_string(), CredentialBackend::Postgres);
+
+        let r = BackendRouting::from_config(&routing, CredentialBackend::Vault).expect("from_config");
+        assert_eq!(r.default_backend(), CredentialBackend::Vault);
+        assert_eq!(
+            r.backend_for_path("racks/r1/maintenance/access-token"),
+            CredentialBackend::Postgres
+        );
+        assert_eq!(r.backend_for_path("machines/bmc/x"), CredentialBackend::Vault);
+    }
+
+    #[test]
+    fn backend_routing_rejects_colliding_prefixes() {
+        use crate::cfg::file::CredentialBackend;
+
+        let mut routing = HashMap::new();
+        routing.insert("/".to_string(), CredentialBackend::Vault);
+        routing.insert("racks".to_string(), CredentialBackend::Postgres);
+        routing.insert("racks/".to_string(), CredentialBackend::Postgres);
+        assert!(BackendRouting::from_config(&routing, CredentialBackend::Vault).is_err());
     }
 }

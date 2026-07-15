@@ -55,7 +55,7 @@ mod tests;
 pub use import::{import_secrets, is_vault_import_complete, mark_vault_import_complete};
 pub use metrics::{OperationTimer, SecretsOperation};
 pub use re_wrap::{ReWrapStaleResult, re_wrap_stale};
-pub use routing::SecretRouting;
+pub use routing::{BackendRouting, SecretRouting};
 
 /// The KMS and routing handles that secrets admin operations (re-wrap)
 /// need. None on the `Api` when the `[secrets]` config section is absent.

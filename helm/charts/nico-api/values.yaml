@@ -150,6 +150,38 @@ env:
 
 extraEnv: []
 
+## Postgres secrets journal and per-prefix writer routing.
+## When enabled, nico-api uses [secrets] in its config TOML. Set writerRouting
+## to send rack maintenance access tokens to Postgres while other credentials
+## continue writing to Vault.
+secrets:
+  enabled: false
+  backends:
+    - postgres
+    - vault
+  writer: vault
+  importFrom: vault
+  importApproach: missing_only
+  writerRouting:
+    "/": vault
+    racks: postgres
+  routing:
+    "/": default-key
+    racks: default-key
+  kms:
+    active: local
+    provider:
+      type: integrated
+      keys:
+        default-key:
+          env: CARBIDE_SECRETS_KEY_DEFAULT
+  ## When enabled, inject the integrated KMS key from this Secret into the pod.
+  kmsKeySecret:
+    enabled: false
+    name: nico-secrets-kms-keys
+    key: default-key
+    envVar: CARBIDE_SECRETS_KEY_DEFAULT
+
 ## External secret/configmap references mounted into the pod
 envFrom:
   vaultApproleTokens:

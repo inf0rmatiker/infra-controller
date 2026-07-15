@@ -58,6 +58,31 @@ nico-api:
     additionalIssuerCns:
       - "site-root"
 
+  ## Optional: store rack maintenance access tokens in Postgres instead of Vault.
+  ## Uncomment and create Secret nico-secrets-kms-keys (base64-encoded 32-byte AES key).
+  # secrets:
+  #   enabled: true
+  #   backends: [postgres, vault]
+  #   writer: vault
+  #   importFrom: vault
+  #   writerRouting:
+  #     "/": vault
+  #     racks: postgres
+  #   routing:
+  #     "/": default-key
+  #     racks: default-key
+  #   kms:
+  #     active: local
+  #     provider:
+  #       type: integrated
+  #       keys:
+  #         default-key:
+  #           env: CARBIDE_SECRETS_KEY_DEFAULT
+  #   kmsKeySecret:
+  #     enabled: true
+  #     name: nico-secrets-kms-keys
+  #     key: default-key
+
   ## MetalLB VIP for the nico-api LoadBalancer service.
   ## Must be an IP within your external IPAddressPool (values/metallb-config.yaml).
   ## This IP must resolve from your external DNS to the hostname above.

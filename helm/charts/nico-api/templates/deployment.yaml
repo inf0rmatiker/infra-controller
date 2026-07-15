@@ -144,6 +144,13 @@ spec:
               value: {{ .Values.env.RUST_BACKTRACE | quote }}
             - name: RUST_LIB_BACKTRACE
               value: {{ .Values.env.RUST_LIB_BACKTRACE | quote }}
+            {{- if and .Values.secrets.enabled .Values.secrets.kmsKeySecret.enabled }}
+            - name: {{ .Values.secrets.kmsKeySecret.envVar | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.kmsKeySecret.name | quote }}
+                  key: {{ .Values.secrets.kmsKeySecret.key | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

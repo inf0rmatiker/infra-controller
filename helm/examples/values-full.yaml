@@ -125,6 +125,34 @@ nico-api:
     interval: 30s
     scrapeTimeout: 25s
 
+  ## Route rack maintenance access tokens to Postgres; other credentials stay on Vault.
+  secrets:
+    enabled: true
+    backends:
+      - postgres
+      - vault
+    writer: vault
+    importFrom: vault
+    importApproach: missing_only
+    writerRouting:
+      "/": vault
+      racks: postgres
+    routing:
+      "/": default-key
+      racks: default-key
+    kms:
+      active: local
+      provider:
+        type: integrated
+        keys:
+          default-key:
+            env: CARBIDE_SECRETS_KEY_DEFAULT
+    kmsKeySecret:
+      enabled: true
+      name: nico-secrets-kms-keys
+      key: default-key
+      envVar: CARBIDE_SECRETS_KEY_DEFAULT
+
 ## ---------------------------------------------------------------------------
 ## nico-dhcp — DHCP server
 ## ---------------------------------------------------------------------------

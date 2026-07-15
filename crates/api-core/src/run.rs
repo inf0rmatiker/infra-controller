@@ -23,7 +23,7 @@ use carbide_kms_provider::{
 };
 use carbide_secrets::credentials::{CredentialManager, CredentialReader, CredentialWriter};
 use carbide_secrets::{
-    CredentialConfig, ForgeVaultClient, MemoryCredentialStore, VaultConfig,
+    CredentialConfig, ForgeVaultClient, MemoryCredentialStore, RoutedCredentialWriter, VaultConfig,
     create_credential_manager_from, create_vault_client,
 };
 use carbide_utils::HostPortPair;
@@ -41,7 +41,7 @@ use crate::listener::AdminUiRoutesBuilder;
 use crate::logging::setup::{
     Logging, create_metric_for_spancount_reader, create_metrics, setup_logging,
 };
-use crate::secrets::{SecretRouting, SecretsContext};
+use crate::secrets::{BackendRouting, SecretRouting, SecretsContext};
 use crate::{CarbideError, dynamic_settings, setup};
 
 /// Vault machine PKI URI SANs must match `[auth.trust]` when site auth config is present.
@@ -327,10 +327,62 @@ pub async fn run(
                 });
         let chain: Vec<Box<dyn CredentialReader>> =
             local_overrides.into_iter().chain(backend_readers).collect();
-        let writer: Arc<dyn CredentialWriter> = match secrets_config.writer {
-            CredentialBackend::Vault => vault_client.clone(),
-            CredentialBackend::Postgres => pg_mgr.clone(),
-        };
+
+        fn credential_writer(
+            backend: CredentialBackend,
+            vault_client: &Arc<ForgeVaultClient>,
+            pg_mgr: &Arc<crate::secrets::PostgresCredentialManager>,
+        ) -> Arc<dyn CredentialWriter> {
+            match backend {
+                CredentialBackend::Vault => vault_client.clone(),
+                CredentialBackend::Postgres => pg_mgr.clone(),
+            }
+        }
+
+        let writer: Arc<dyn CredentialWriter> =
+            if let Some(ref writer_routing) = secrets_config.writer_routing {
+                let backend_routing = BackendRouting::from_config(
+                    writer_routing,
+                    secrets_config.writer,
+                )
+                .map_err(eyre::Report::new)
+                .wrap_err("secrets writer_routing configuration")?;
+                tracing::info!(
+                    writer_routing = ?writer_routing,
+                    default_writer = ?backend_routing.default_backend(),
+                    "Per-prefix credential writer routing enabled"
+                );
+                for (prefix, backend) in backend_routing.routes() {
+                    let backend_index = secrets_config.backends.iter().position(|b| *b == backend);
+                    if backend_index != Some(0) {
+                        tracing::warn!(
+                            prefix = prefix,
+                            backend = ?backend,
+                            backends = ?secrets_config.backends,
+                            "writer_routing sends writes for this prefix to a backend that is not \
+                             the highest-priority reader: reads may not see the write until a \
+                             higher-priority copy is removed (read-after-write gap)"
+                        );
+                    }
+                }
+                let default_writer = credential_writer(
+                    backend_routing.default_backend(),
+                    &vault_client,
+                    &pg_mgr,
+                );
+                let routes: Vec<(String, Arc<dyn CredentialWriter>)> = backend_routing
+                    .routes()
+                    .map(|(prefix, backend)| {
+                        (
+                            prefix.to_string(),
+                            credential_writer(backend, &vault_client, &pg_mgr),
+                        )
+                    })
+                    .collect();
+                Arc::new(RoutedCredentialWriter::new(routes, default_writer))
+            } else {
+                credential_writer(secrets_config.writer, &vault_client, &pg_mgr)
+            };
         (
             create_credential_manager_from(writer, chain),
             Some(SecretsContext { routing, kms }),

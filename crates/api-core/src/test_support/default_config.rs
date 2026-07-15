@@ -80,6 +80,7 @@ pub fn fully_populated() -> CarbideConfig {
             routing: HashMap::from([("/".to_string(), "kek".to_string())]),
             backends: vec![],
             writer: Default::default(),
+            writer_routing: None,
             import_from: None,
             import_approach: Default::default(),
         }),

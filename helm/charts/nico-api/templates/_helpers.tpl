@@ -106,3 +106,41 @@ selector:
   matchLabels:
     app.kubernetes.io/metrics: {{ .name }}
 {{- end }}
+
+{{/*
+Render the optional [secrets] TOML block for nico-api when .Values.secrets.enabled.
+*/}}
+{{- define "nico-api.secretsConfigToml" -}}
+{{- if .Values.secrets.enabled }}
+[secrets]
+backends = [{{ range $i, $b := .Values.secrets.backends }}{{ if $i }}, {{ end }}{{ $b | quote }}{{ end }}]
+writer = {{ .Values.secrets.writer | quote }}
+{{- if .Values.secrets.importFrom }}
+import_from = {{ .Values.secrets.importFrom | quote }}
+{{- end }}
+{{- if .Values.secrets.importApproach }}
+import_approach = {{ .Values.secrets.importApproach | quote }}
+{{- end }}
+
+{{- if .Values.secrets.writerRouting }}
+[secrets.writer_routing]
+{{- range $prefix, $backend := .Values.secrets.writerRouting }}
+{{ $prefix | quote }} = {{ $backend | quote }}
+{{- end }}
+{{- end }}
+
+[secrets.kms]
+active = {{ .Values.secrets.kms.active | quote }}
+
+[secrets.kms.providers.{{ .Values.secrets.kms.active }}]
+type = {{ .Values.secrets.kms.provider.type | quote }}
+{{- range $kekId, $source := .Values.secrets.kms.provider.keys }}
+keys.{{ $kekId }} = { {{ if $source.env }}env = {{ $source.env | quote }}{{ else if $source.file }}file = {{ $source.file | quote }}{{ end }} }
+{{- end }}
+
+[secrets.routing]
+{{- range $prefix, $kekId := .Values.secrets.routing }}
+{{ $prefix | quote }} = {{ $kekId | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
