@@ -1166,20 +1166,39 @@ fn is_rack_scale_server(machine: &HostMachine) -> bool {
         .is_some_and(|hw| hw.is_mnnvl_capable())
 }
 
+/// Returns whether the machine can be driven through a compute-tray backend
+/// for firmware, either because discovery identified MNNVL hardware or because
+/// it is a tray of a rack NICo manages as a unit.
+///
+/// Rack membership is load-bearing on its own because both rack-scale firmware
+/// routes reach the tray through its rack — the state-controller flow groups
+/// requests by `rack_id`, and an RMS direct dispatch resolves the tray's
+/// identity from `rack_id` and its rack profile — while neither consults
+/// discovered host inventory. [`is_rack_scale_server`] only answers once the
+/// host has booted far enough to report its GPUs and DMI data, so a tray that
+/// is still provisioning would otherwise be classified standalone and diverted
+/// to the host reprovisioning path, which never reaches the backend.
+fn tray_supports_backend_firmware_dispatch(machine: &HostMachine) -> bool {
+    is_rack_scale_server(machine) || machine.rack_id.is_some()
+}
+
 /// Splits already-loaded compute machines into rack-scale and standalone lists.
 /// Rack-scale systems go through the rack-level state controller maintenance flow.
 /// Standalone servers use the existing host reprovisioning firmware path.
 ///
 /// Unknown ids are a hard error here (firmware path); power control collects
 /// them as per-machine results instead via [`machine_is_rack_scale`].
-fn partition_loaded_compute_machines_by_rack_scale(
+fn partition_loaded_compute_machines_for_firmware(
     machines_by_id: &HashMap<HostMachineId, HostMachine>,
     machine_ids: &[HostMachineId],
 ) -> Result<(Vec<HostMachineId>, Vec<HostMachineId>), Status> {
     let mut rack_scale = Vec::new();
     let mut standalone = Vec::new();
     for &machine_id in machine_ids {
-        if machine_is_rack_scale(machines_by_id, machine_id)? {
+        let machine = machines_by_id
+            .get(&machine_id)
+            .ok_or_else(|| Status::not_found(format!("machine {machine_id} not found")))?;
+        if tray_supports_backend_firmware_dispatch(machine) {
             rack_scale.push(machine_id);
         } else {
             standalone.push(machine_id);
@@ -4499,9 +4518,9 @@ async fn update_pre_ingestion_compute_tray_firmware(
 ///
 /// Standalone (non-rack-scale) servers have no compute-tray backend that can
 /// take a direct firmware dispatch, so they always go through the host
-/// reprovisioning firmware flow. Only rack-scale systems (currently GB200 NVL,
-/// driven through the ComputeTrayManager interface) can choose between the
-/// rack-level state controller maintenance flow and a direct backend dispatch.
+/// reprovisioning firmware flow. Only trays of a managed rack (driven through
+/// the ComputeTrayManager interface) can choose between the rack-level state
+/// controller maintenance flow and a direct backend dispatch.
 async fn update_compute_tray_firmware_by_machine_ids(
     api: &Api,
     machine_ids: &[HostMachineId],
@@ -4515,11 +4534,17 @@ async fn update_compute_tray_firmware_by_machine_ids(
 
     let machines_by_id = load_machines_by_id(api, machine_ids).await?;
     let (rack_scale_ids, standalone_ids) =
-        partition_loaded_compute_machines_by_rack_scale(&machines_by_id, machine_ids)?;
+        partition_loaded_compute_machines_for_firmware(&machines_by_id, machine_ids)?;
 
     let mut results = Vec::new();
 
     if !standalone_ids.is_empty() {
+        // This path reports success without dispatching to a compute-tray
+        // backend, so record how many of the requested trays took it.
+        tracing::info!(
+            standalone_machine_count = standalone_ids.len(),
+            "scheduling host reprovisioning firmware update for compute trays no backend can drive"
+        );
         results.extend(schedule_host_reprovisioning_firmware_update(api, &standalone_ids).await);
     }
 
@@ -7233,6 +7258,20 @@ mod tests {
         machine_with_hardware(Some(HardwareInfo::default()))
     }
 
+    /// A tray of a rack NICo manages as a unit. The shared fixture already sets
+    /// a rack, so rows pair this with [`without_rack`] to state both axes of the
+    /// firmware routing decision rather than inherit one of them.
+    fn in_rack(mut machine: HostMachine) -> HostMachine {
+        machine.rack_id = Some(RackId::new("rack-a"));
+        machine
+    }
+
+    /// A server that belongs to no rack NICo manages.
+    fn without_rack(mut machine: HostMachine) -> HostMachine {
+        machine.rack_id = None;
+        machine
+    }
+
     /// Mirror the MachineIds power path's classify → power-option gate → partition
     /// loop without a database: unknown ids become per-machine NotFound results,
     /// and only machines with a successful power-option update join a partition.
@@ -7293,6 +7332,40 @@ mod tests {
         let err = machine_is_rack_scale(&HashMap::new(), id).unwrap_err();
         assert_eq!(err.code(), Code::NotFound);
         assert!(err.message().contains(&id.to_string()));
+    }
+
+    /// Firmware routing cannot wait for host discovery: a tray of a managed
+    /// rack reaches the backend while the host is still provisioning and has no
+    /// GPUs or DMI data to match MNNVL on. Classifying it standalone diverts it
+    /// to the host reprovisioning path, which reports success without ever
+    /// dispatching.
+    #[test]
+    fn firmware_routing_sends_rack_members_and_mnnvl_hosts_to_the_backend() {
+        use carbide_test_support::Outcome::*;
+
+        carbide_test_support::scenarios!(run = |machine: Option<HostMachine>| {
+                let id = compute_host_machine_id(0);
+                // An absent entry models an id with no machine row.
+                let machines_by_id = machine
+                    .map(|machine| HashMap::from([(id, machine_with_id(machine, id))]))
+                    .unwrap_or_default();
+                partition_loaded_compute_machines_for_firmware(&machines_by_id, &[id])
+                    .map(|(rack_scale, _)| rack_scale.contains(&id))
+                    .map_err(|status| status.code())
+            };
+            "a tray the backend can drive" {
+                Some(in_rack(standalone_machine())) => Yields(true),
+                Some(without_rack(rack_scale_machine())) => Yields(true),
+            }
+
+            "a server only the host reprovisioning path can update" {
+                Some(without_rack(standalone_machine())) => Yields(false),
+            }
+
+            "an unknown id aborts the batch rather than being silently dropped" {
+                None => FailsWith(Code::NotFound),
+            }
+        );
     }
 
     #[test]
